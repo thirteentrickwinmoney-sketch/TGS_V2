@@ -1,0 +1,83 @@
+[
+  {
+    "id": "VWAP_BOUNCE",
+    "displayName": "VWAP Bounce",
+    "shortName": "VWAP",
+    "accessTier": "PRO",
+    "group": "VOLUME",
+    "summary": "Institutional intraday VWAP support and rejection model.",
+    "isProOnly": true
+  },
+  {
+    "id": "ADX_TREND_FILTER",
+    "displayName": "ADX Trend Filter",
+    "shortName": "ADX",
+    "accessTier": "PRO",
+    "group": "TREND",
+    "summary": "Trades only when directional strength clears a true-trend filter.",
+    "isProOnly": true
+  },
+  {
+    "id": "ICHIMOKU_CLOUD",
+    "displayName": "Ichimoku Cloud",
+    "shortName": "Ichi",
+    "accessTier": "PRO",
+    "group": "TREND",
+    "summary": "Uses cloud trend state, Tenkan/Kijun alignment, and price location.",
+    "isProOnly": true
+  },
+  {
+    "id": "TRIPLE_CONFLUENCE",
+    "displayName": "Triple Confluence",
+    "shortName": "3x",
+    "accessTier": "PRO",
+    "group": "CONFLUENCE",
+    "summary": "Requires agreement from trend, momentum, and volatility structure.",
+    "isProOnly": true
+  },
+  {
+    "id": "DONCHIAN_CHANNEL",
+    "displayName": "Donchian Breakout",
+    "shortName": "Donch",
+    "accessTier": "PRO",
+    "group": "TREND",
+    "summary": "Captures continuation breakouts with volatility-aware exits.",
+    "isProOnly": true
+  },
+  {
+    "id": "CHAIKIN_MONEY_FLOW",
+    "displayName": "Chaikin Money Flow",
+    "shortName": "CMF",
+    "accessTier": "PRO",
+    "group": "VOLUME",
+    "summary": "Confirms accumulation or distribution behind the active move.",
+    "isProOnly": true
+  },
+  {
+    "id": "ELDER_RAY",
+    "displayName": "Elder Ray",
+    "shortName": "Elder",
+    "accessTier": "PRO",
+    "group": "MOMENTUM",
+    "summary": "Measures bull and bear power against the underlying EMA trend.",
+    "isProOnly": true
+  },
+  {
+    "id": "SUPERTREND",
+    "displayName": "Supertrend",
+    "shortName": "ST",
+    "accessTier": "PRO",
+    "group": "TREND",
+    "summary": "Trend-following continuation model with ATR-driven invalidation.",
+    "isProOnly": true
+  },
+  {
+    "id": "ICT_DEEP_TP",
+    "displayName": "ICT Deep TP",
+    "shortName": "ICT+",
+    "accessTier": "PRO",
+    "group": "STRUCTURE",
+    "summary": "Advanced ICT precision model: FVG entry, OB mitigation, and liquidity-pool-based TP targeting.",
+    "isProOnly": true
+  }
+]

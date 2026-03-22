@@ -1,0 +1,26 @@
+{
+  "name": "tgs-payment-backend",
+  "version": "1.0.0",
+  "description": "Trader God Signals — payment verification & Stripe checkout backend",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "lint": "eslint ."
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^8.3.1",
+    "firebase-admin": "^12.1.0",
+    "googleapis": "^140.0.0",
+    "stripe": "^15.9.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}
