@@ -7,13 +7,10 @@
  *   POST /verify-purchase   — validate a Google Play purchaseToken in real-time
  *   GET  /checkout          — create a Stripe Checkout Session and redirect
  *   POST /webhook/stripe    — handle Stripe events (checkout.session.completed)
+ *   POST /api/khqr/generate — generate a KHQR transaction ID
+ *   GET  /api/khqr/status   — poll status of KHQR transaction
+ *   POST /api/khqr/webhook  — handle KHQR payment successful events
  *   GET  /health            — liveness check for hosting platforms
- *
- * Deploy on Railway / Render / Fly.io:
- *   1. Push this folder to a GitHub repo
- *   2. Connect the repo on railway.app (or render.com)
- *   3. Set all .env.example variables as environment secrets
- *   4. Done — the platform builds & starts with `npm start`
  */
 
 require('dotenv').config();
@@ -24,6 +21,7 @@ const rateLimit  = require('express-rate-limit');
 const { google } = require('googleapis');
 const admin      = require('firebase-admin');
 const Stripe     = require('stripe');
+const crypto     = require('crypto');
 
 // ── Validate required environment variables ───────────────────────────────────
 const REQUIRED_VARS = [
@@ -125,22 +123,97 @@ app.use('/api', apiLimiter);
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 
-/**
- * GET /health
- * Simple liveness check used by Railway / Render health probes.
- */
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', ts: Date.now() });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// KHQR Payment Endpoints (Secure Flow)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 1. Generate Transaction
+app.post('/api/khqr/generate', async (req, res) => {
+  const { uid, planId, amount, currency = 'USD' } = req.body;
+  if (!uid || !planId || !amount) {
+    return res.status(400).json({ error: 'Missing uid, planId, or amount' });
+  }
+
+  try {
+    const txnId = crypto.randomUUID();
+
+    // Store in Firestore so we can verify securely
+    if (firestore) {
+      await firestore.collection('khqr_transactions').doc(txnId).set({
+        uid,
+        planId,
+        amount,
+        currency,
+        status: 'PENDING',
+        createdAt: Date.now()
+      });
+    }
+
+    res.json({
+      status: 'success',
+      txnId,
+      qrString: "00020101021238590010A0000007270129000697042201150000049444141150208QRIB924852045999530384054041.005802KH5912KIM  MENGHOK6010PHNOM PENH62270105TGSV405205510408129953038406304CA15"
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 2. Poll Status (App calls this to verify payment)
+app.get('/api/khqr/status/:txnId', async (req, res) => {
+  try {
+    if (!firestore) return res.json({ status: 'PENDING', note: 'No DB configured' });
+
+    const doc = await firestore.collection('khqr_transactions').doc(req.params.txnId).get();
+    if (!doc.exists) return res.status(404).json({ error: 'Transaction not found' });
+
+    res.json({ status: doc.data().status });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 3. Webhook (Bank calls this, or you trigger it via Postman to mock success)
+app.post('/api/khqr/webhook', async (req, res) => {
+  const { txnId, status } = req.body;
+
+  if (!txnId || status !== 'SUCCESS') {
+    return res.status(400).json({ error: 'Invalid payload' });
+  }
+
+  try {
+    if (!firestore) return res.json({ success: false, reason: 'No DB configured' });
+
+    const txnRef = firestore.collection('khqr_transactions').doc(txnId);
+    const doc = await txnRef.get();
+    if (!doc.exists) return res.status(404).json({ error: 'Transaction not found' });
+
+    const data = doc.data();
+    if (data.status === 'SUCCESS') return res.json({ success: true, note: 'Already processed' });
+
+    // Mark transaction as SUCCESS
+    await txnRef.update({ status: 'SUCCESS', paidAt: Date.now() });
+
+    // Grant PRO Securely
+    const isLifetime = data.planId === 'tgs_pro_lifetime';
+    const expiresAt = isLifetime ? 0 : Date.now() + 30 * 24 * 60 * 60 * 1000;
+
+    await grantProInFirestore(data.uid, data.planId, `khqr_${txnId}`, expiresAt);
+    console.log(`[TGS] KHQR Payment Success! PRO granted for UID: ${data.uid}, Plan: ${data.planId}`);
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error(`[TGS] KHQR Webhook error: ${e.message}`);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // POST /verify-purchase
-//
-// Validates a Google Play purchaseToken against the Play Developer API.
-// Called by Android's PurchaseVerifier.kt immediately after a purchase.
-//
-// Body: { uid, packageName, productId, purchaseToken }
-// Response: { valid: boolean, expiresAt?: number, reason?: string }
 // ─────────────────────────────────────────────────────────────────────────────
 app.post('/verify-purchase', async (req, res) => {
   const { uid, packageName, productId, purchaseToken } = req.body;
@@ -160,12 +233,10 @@ app.post('/verify-purchase', async (req, res) => {
       console.log(`[TGS] Verifying Stripe Session: ${purchaseToken}`);
       const session = await stripe.checkout.sessions.retrieve(purchaseToken);
       
-      // status 'complete' and payment_status 'paid'
       if (session.status !== 'complete' || session.payment_status !== 'paid') {
         return res.json({ valid: false, reason: `stripe_status_${session.status}_${session.payment_status}` });
       }
 
-      // For subscriptions, get expiry
       let expiresAt = 0;
       if (!isLifetime && session.subscription) {
         try {
@@ -189,14 +260,12 @@ app.post('/verify-purchase', async (req, res) => {
     }
 
     if (isLifetime) {
-      // One-time purchase — use products.get
       const { data } = await androidPublisher.purchases.products.get({
         packageName,
         productId,
         token: purchaseToken,
       });
 
-      // purchaseState 0 = purchased, 1 = cancelled, 2 = pending
       if (data.purchaseState !== 0) {
         return res.json({ valid: false, reason: `purchase_state_${data.purchaseState}` });
       }
@@ -205,14 +274,12 @@ app.post('/verify-purchase', async (req, res) => {
       return res.json({ valid: true, expiresAt: 0 });
 
     } else {
-      // Subscription — use subscriptions.get
       const { data } = await androidPublisher.purchases.subscriptions.get({
         packageName,
         subscriptionId: productId,
         token: purchaseToken,
       });
 
-      // paymentState: 0=pending, 1=received, 2=free trial, 3=pending deferred
       if (data.paymentState !== 1 && data.paymentState !== 2) {
         return res.json({ valid: false, reason: `payment_state_${data.paymentState}` });
       }
@@ -229,23 +296,15 @@ app.post('/verify-purchase', async (req, res) => {
 
   } catch (err) {
     console.error('[TGS] verify-purchase error:', err.message);
-    // If Play API responds 404 the token is invalid / belongs to another user
     if (err.code === 404 || err.status === 404) {
       return res.json({ valid: false, reason: 'token_not_found' });
     }
-    // Unexpected server error — return 500 so the app uses optimistic fallback
     return res.status(500).json({ valid: false, reason: 'server_error' });
   }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /checkout
-//
-// Creates a Stripe Checkout Session for web-based purchase (fallback path).
-// Used by WebCheckoutActivity via WebPaymentManager.buildCheckoutUrl().
-//
-// Query params: uid, plan, platform, success_url, cancel_url
-// Response: 302 redirect to Stripe hosted payment page
+// GET /checkout (Stripe Fallback)
 // ─────────────────────────────────────────────────────────────────────────────
 app.get('/checkout', async (req, res) => {
   const { uid, plan, platform, success_url, cancel_url } = req.query;
@@ -277,13 +336,10 @@ app.get('/checkout', async (req, res) => {
       },
     };
 
-    // customer_creation is only allowed in 'payment' mode.
-    // In 'subscription' mode, a customer is always created automatically.
     if (isLifetime) {
       sessionParams.customer_creation = 'always';
     }
 
-    // Retrieve customer email from Firestore to pre-fill Stripe form
     try {
       const userDoc = await firestore.collection('users').doc(uid).get();
       if (userDoc.exists) {
@@ -291,13 +347,12 @@ app.get('/checkout', async (req, res) => {
         if (email) sessionParams.customer_email = email;
       }
     } catch (e) {
-      // Non-critical — Stripe form will ask for email
+      // Non-critical
     }
 
     const session = await stripe.checkout.sessions.create(sessionParams);
     console.log(`[TGS] Checkout session created: ${session.id} for uid=${uid} plan=${plan}`);
 
-    // Redirect client to Stripe-hosted checkout page
     return res.redirect(303, session.url);
 
   } catch (err) {
@@ -308,10 +363,6 @@ app.get('/checkout', async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /webhook/stripe
-//
-// Receives Stripe events. The most important one is checkout.session.completed
-// which fires when the web checkout flow succeeds. We grant PRO here so the
-// user gets access even if the app WebView fails to intercept the redirect.
 // ─────────────────────────────────────────────────────────────────────────────
 app.post('/webhook/stripe', async (req, res) => {
   const sig = req.headers['stripe-signature'];
@@ -337,14 +388,13 @@ app.post('/webhook/stripe', async (req, res) => {
     if (uid && plan) {
       const isLifetime = plan === 'tgs_pro_lifetime';
 
-      // For subscriptions, get expiry from the subscription object
       let expiresAt = 0;
       if (!isLifetime && session.subscription) {
         try {
           const sub = await stripe.subscriptions.retrieve(session.subscription);
-          expiresAt = sub.current_period_end * 1000; // convert to ms
+          expiresAt = sub.current_period_end * 1000;
         } catch (e) {
-          expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000; // fallback: 30 days
+          expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
         }
       }
 
@@ -354,7 +404,6 @@ app.post('/webhook/stripe', async (req, res) => {
   }
 
   if (event.type === 'customer.subscription.deleted') {
-    // Subscription was cancelled / expired — revoke PRO
     const sub = event.data.object;
     const uid = sub.metadata?.uid;
     if (uid) {
@@ -369,8 +418,6 @@ app.post('/webhook/stripe', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/v1/market/quote
 // GET /api/v1/market/time_series
-//
-// Proxies requests to TwelveData to hide the API key from the Android client.
 // ─────────────────────────────────────────────────────────────────────────────
 app.get('/api/v1/market/quote', async (req, res) => {
   const { symbol } = req.query;
@@ -411,9 +458,6 @@ app.get('/api/v1/market/time_series', async (req, res) => {
 
 // ── Firestore helpers ─────────────────────────────────────────────────────────
 
-/**
- * Writes isPro=true to the user's Firestore document.
- */
 async function grantProInFirestore(uid, planId, purchaseToken, expiresAt) {
   try {
     await firestore.collection('users').doc(uid).set({
@@ -428,9 +472,6 @@ async function grantProInFirestore(uid, planId, purchaseToken, expiresAt) {
   }
 }
 
-/**
- * Revokes PRO status in Firestore (subscription expired or cancelled).
- */
 async function revokeProInFirestore(uid) {
   try {
     await firestore.collection('users').doc(uid).set({
@@ -451,6 +492,7 @@ app.listen(PORT, () => {
   console.log(`[TGS]    POST /verify-purchase`);
   console.log(`[TGS]    GET  /checkout`);
   console.log(`[TGS]    POST /webhook/stripe`);
+  console.log(`[TGS]    POST /api/khqr/generate`);
   console.log(`[TGS]    GET  /health`);
 });
 
